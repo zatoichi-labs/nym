@@ -106,6 +106,12 @@ impl PemStorableKeyPair for KeyPair {
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub struct PublicKey(x25519_dalek::PublicKey);
 
+impl Display for PublicKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_base58_string())
+    }
+}
+
 impl PublicKey {
     pub fn to_bytes(self) -> [u8; PUBLIC_KEY_SIZE] {
         *self.0.as_bytes()
@@ -124,8 +130,8 @@ impl PublicKey {
         bs58::encode(self.to_bytes()).into_string()
     }
 
-    pub fn from_base58_string<S: Into<String>>(val: S) -> Result<Self, KeyRecoveryError> {
-        let bytes = bs58::decode(val.into()).into_vec()?;
+    pub fn from_base58_string<I: AsRef<[u8]>>(val: I) -> Result<Self, KeyRecoveryError> {
+        let bytes = bs58::decode(val).into_vec()?;
         Self::from_bytes(&bytes)
     }
 }
@@ -148,6 +154,12 @@ impl PemStorableKey for PublicKey {
 
 #[derive(Clone)]
 pub struct PrivateKey(x25519_dalek::StaticSecret);
+
+impl Display for PrivateKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_base58_string())
+    }
+}
 
 impl<'a> From<&'a PrivateKey> for PublicKey {
     fn from(pk: &'a PrivateKey) -> Self {
@@ -173,8 +185,8 @@ impl PrivateKey {
         bs58::encode(&self.to_bytes()).into_string()
     }
 
-    pub fn from_base58_string<S: Into<String>>(val: S) -> Result<Self, KeyRecoveryError> {
-        let bytes = bs58::decode(val.into()).into_vec()?;
+    pub fn from_base58_string<I: AsRef<[u8]>>(val: I) -> Result<Self, KeyRecoveryError> {
+        let bytes = bs58::decode(val).into_vec()?;
         Self::from_bytes(&bytes)
     }
 

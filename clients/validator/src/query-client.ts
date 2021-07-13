@@ -1,20 +1,26 @@
 import {Coin} from "@cosmjs/launchpad";
-import {CosmWasmClient} from "@cosmjs/cosmwasm-stargate";
+import { CosmWasmClient } from "@cosmjs/cosmwasm-stargate";
 import {
+    Delegation,
     GatewayOwnershipResponse,
-    MixOwnershipResponse,
-    PagedGatewayResponse,
-    PagedResponse,
+    MixOwnershipResponse, PagedGatewayDelegationsResponse,
+    PagedGatewayResponse, PagedMixDelegationsResponse,
+    PagedMixnodeResponse,
     StateParams
 } from "./index";
 
 export interface IQueryClient {
     getBalance(address: string, stakeDenom: string): Promise<Coin | null>;
-    getMixNodes(contractAddress: string, limit: number, start_after?: string): Promise<PagedResponse>;
+    getMixNodes(contractAddress: string, limit: number, start_after?: string): Promise<PagedMixnodeResponse>;
     getGateways(contractAddress: string, limit: number, start_after?: string): Promise<PagedGatewayResponse>;
+    getMixDelegations(contractAddress: string, mixIdentity: string, limit: number, start_after?: string): Promise<PagedMixDelegationsResponse>
+    getMixDelegation(contractAddress: string, mixIdentity: string, delegatorAddress: string): Promise<Delegation>
+    getGatewayDelegations(contractAddress: string, gatewayIdentity: string, limit: number, start_after?: string): Promise<PagedGatewayDelegationsResponse>
+    getGatewayDelegation(contractAddress: string, gatewayIdentity: string, delegatorAddress: string): Promise<Delegation>
     ownsMixNode(contractAddress: string, address: string): Promise<MixOwnershipResponse>;
     ownsGateway(contractAddress: string, address: string): Promise<GatewayOwnershipResponse>;
     getStateParams(contractAddress: string): Promise<StateParams>;
+    changeValidator(newUrl: string): Promise<void>
 }
 
 /**
@@ -37,7 +43,11 @@ export default class QueryClient implements IQueryClient {
         return new QueryClient(client)
     }
 
-    public getMixNodes(contractAddress: string, limit: number, start_after?: string): Promise<PagedResponse> {
+    async changeValidator(url: string): Promise<void> {
+        this.cosmClient = await CosmWasmClient.connect(url)
+    }
+
+    public getMixNodes(contractAddress: string, limit: number, start_after?: string): Promise<PagedMixnodeResponse> {
         if (start_after == undefined) { // TODO: check if we can take this out, I'm not sure what will happen if we send an "undefined" so I'm playing it safe here.
             return this.cosmClient.queryContractSmart(contractAddress, { get_mix_nodes: { limit } });
         } else {
@@ -51,6 +61,30 @@ export default class QueryClient implements IQueryClient {
         } else {
             return this.cosmClient.queryContractSmart(contractAddress, { get_gateways: { limit, start_after } });
         }
+    }
+
+    public getMixDelegations(contractAddress: string, mixIdentity: string, limit: number, start_after?: string): Promise<PagedMixDelegationsResponse> {
+        if (start_after == undefined) { // TODO: check if we can take this out, I'm not sure what will happen if we send an "undefined" so I'm playing it safe here.
+            return this.cosmClient.queryContractSmart(contractAddress, { get_mix_delegations: { mix_identity: mixIdentity, limit } });
+        } else {
+            return this.cosmClient.queryContractSmart(contractAddress, { get_mix_delegations: {  mix_identity: mixIdentity, limit, start_after } });
+        }
+    }
+
+    public getMixDelegation(contractAddress: string, mixIdentity: string, delegatorAddress: string): Promise<Delegation> {
+        return this.cosmClient.queryContractSmart(contractAddress, { get_mix_delegation: { mix_identity: mixIdentity, address: delegatorAddress } });
+    }
+
+    public getGatewayDelegations(contractAddress: string, gatewayIdentity: string, limit: number, start_after?: string): Promise<PagedGatewayDelegationsResponse> {
+        if (start_after == undefined) { // TODO: check if we can take this out, I'm not sure what will happen if we send an "undefined" so I'm playing it safe here.
+            return this.cosmClient.queryContractSmart(contractAddress, { get_gateway_delegations: { gateway_identity: gatewayIdentity, limit } });
+        } else {
+            return this.cosmClient.queryContractSmart(contractAddress, { get_gateway_delegations: {  gateway_identity: gatewayIdentity, limit, start_after } });
+        }
+    }
+
+    public getGatewayDelegation(contractAddress: string, gatewayIdentity: string, delegatorAddress: string): Promise<Delegation> {
+        return this.cosmClient.queryContractSmart(contractAddress, { get_gateway_delegation: { gateway_identity: gatewayIdentity, address: delegatorAddress } });
     }
 
     public ownsMixNode(contractAddress: string, address: string): Promise<MixOwnershipResponse> {

@@ -40,10 +40,10 @@ pub fn command_args<'a, 'b>() -> clap::App<'a, 'b> {
             .help("Address of the socks5 provider to send messages to.")
             .takes_value(true)
         )
-        .arg(Arg::with_name("validator")
-            .long("validator")
-            .help("Address of the validator server the client is getting topology from")
-            .takes_value(true),
+        .arg(Arg::with_name("validators")
+                .long("validators")
+                .help("Comma separated list of rest endpoints of the validators")
+                .takes_value(true),
         )
         .arg(Arg::with_name("mixnet-contract")
                  .long("mixnet-contract")
@@ -96,7 +96,7 @@ fn version_check(cfg: &Config) -> bool {
 pub fn execute(matches: &ArgMatches) {
     let id = matches.value_of("id").unwrap();
 
-    let mut config = match Config::load_from_file(id) {
+    let mut config = match Config::load_from_file(Some(id)) {
         Ok(cfg) => cfg,
         Err(err) => {
             error!("Failed to load config for {}. Are you sure you have run `init` before? (Error was: {})", id, err);

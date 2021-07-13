@@ -18,7 +18,7 @@ pub use ed25519_dalek::{Verifier, PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATUR
 use nymsphinx_types::{DestinationAddressBytes, DESTINATION_ADDRESS_LENGTH};
 use pemstore::traits::{PemStorableKey, PemStorableKeyPair};
 use rand::{CryptoRng, RngCore};
-use std::fmt::{self, Formatter};
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug)]
 pub enum KeyRecoveryError {
@@ -104,6 +104,12 @@ impl PemStorableKeyPair for KeyPair {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct PublicKey(ed25519_dalek::PublicKey);
 
+impl Display for PublicKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_base58_string())
+    }
+}
+
 impl PublicKey {
     pub fn derive_destination_address(&self) -> DestinationAddressBytes {
         let mut temporary_address = [0u8; DESTINATION_ADDRESS_LENGTH];
@@ -128,8 +134,8 @@ impl PublicKey {
         bs58::encode(self.to_bytes()).into_string()
     }
 
-    pub fn from_base58_string<S: Into<String>>(val: S) -> Result<Self, KeyRecoveryError> {
-        let bytes = bs58::decode(val.into()).into_vec()?;
+    pub fn from_base58_string<I: AsRef<[u8]>>(val: I) -> Result<Self, KeyRecoveryError> {
+        let bytes = bs58::decode(val).into_vec()?;
         Self::from_bytes(&bytes)
     }
 
@@ -158,6 +164,12 @@ impl PemStorableKey for PublicKey {
 #[derive(Debug)]
 pub struct PrivateKey(ed25519_dalek::SecretKey);
 
+impl Display for PrivateKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_base58_string())
+    }
+}
+
 impl<'a> From<&'a PrivateKey> for PublicKey {
     fn from(pk: &'a PrivateKey) -> Self {
         PublicKey((&pk.0).into())
@@ -177,8 +189,8 @@ impl PrivateKey {
         bs58::encode(&self.to_bytes()).into_string()
     }
 
-    pub fn from_base58_string<S: Into<String>>(val: S) -> Result<Self, KeyRecoveryError> {
-        let bytes = bs58::decode(val.into()).into_vec()?;
+    pub fn from_base58_string<I: AsRef<[u8]>>(val: I) -> Result<Self, KeyRecoveryError> {
+        let bytes = bs58::decode(val).into_vec()?;
         Self::from_bytes(&bytes)
     }
 

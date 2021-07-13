@@ -1,131 +1,67 @@
 // Copyright 2020 - Nym Technologies SA <contact@nymtech.net>
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::commands::override_config;
+use crate::commands::*;
 use crate::config::persistence::pathfinder::MixNodePathfinder;
 use crate::config::Config;
 use clap::{App, Arg, ArgMatches};
 use config::NymConfig;
 use crypto::asymmetric::{encryption, identity};
-use log::*;
-use nymsphinx::params::DEFAULT_NUM_MIX_HOPS;
-use std::collections::HashMap;
 use tokio::runtime::Runtime;
 
 pub fn command_args<'a, 'b>() -> clap::App<'a, 'b> {
     App::new("init")
         .about("Initialise the mixnode")
         .arg(
-            Arg::with_name("id")
-                .long("id")
+            Arg::with_name(ID_ARG_NAME)
+                .long(ID_ARG_NAME)
                 .help("Id of the nym-mixnode we want to create config for.")
                 .takes_value(true)
                 .required(true),
         )
         .arg(
-            Arg::with_name("layer")
-                .long("layer")
-                .help("The mixnet layer of this particular node")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("host")
-                .long("host")
+            Arg::with_name(HOST_ARG_NAME)
+                .long(HOST_ARG_NAME)
                 .help("The host on which the mixnode will be running")
                 .takes_value(true)
                 .required(true),
         )
         .arg(
-            Arg::with_name("port")
-                .long("port")
-                .help("The port on which the mixnode will be listening")
+            Arg::with_name(MIX_PORT_ARG_NAME)
+                .long(MIX_PORT_ARG_NAME)
+                .help("The port on which the mixnode will be listening for mix packets")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("announce-host")
-                .long("announce-host")
+            Arg::with_name(VERLOC_PORT_ARG_NAME)
+                .long(VERLOC_PORT_ARG_NAME)
+                .help("The port on which the mixnode will be listening for verloc packets")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name(HTTP_API_PORT_ARG_NAME)
+                .long(HTTP_API_PORT_ARG_NAME)
+                .help("The port on which the mixnode will be listening for http requests")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name(ANNOUNCE_HOST_ARG_NAME)
+                .long(ANNOUNCE_HOST_ARG_NAME)
                 .help("The custom host that will be reported to the directory server")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("announce-port")
-                .long("announce-port")
-                .help("The custom port that will be reported to the directory server")
+            Arg::with_name(VALIDATORS_ARG_NAME)
+                .long(VALIDATORS_ARG_NAME)
+                .help("Comma separated list of rest endpoints of the validators")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("validator")
-                .long("validator")
-                .help("REST endpoint of the validator the node is registering presence with")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("mixnet-contract")
-                .long("mixnet-contract")
+            Arg::with_name(CONTRACT_ARG_NAME)
+                .long(CONTRACT_ARG_NAME)
                 .help("Address of the validator contract managing the network")
                 .takes_value(true),
         )
-        .arg(
-            Arg::with_name("metrics-server")
-                .long("metrics-server")
-                .help("Server to which the node is sending all metrics data")
-                .takes_value(true),
-        )
-}
-
-async fn choose_layer(
-    matches: &ArgMatches<'_>,
-    validator_server: String,
-    mixnet_contract: String,
-) -> u64 {
-    let max_layer = DEFAULT_NUM_MIX_HOPS;
-    if let Some(layer) = matches.value_of("layer").map(|layer| layer.parse::<u64>()) {
-        if let Err(err) = layer {
-            // if layer was overridden, it must be parsable
-            panic!("Invalid layer value provided - {:?}", err);
-        }
-        let layer = layer.unwrap();
-        if layer <= max_layer as u64 && layer > 0 {
-            return layer;
-        }
-    }
-
-    let validator_client_config =
-        validator_client_rest::Config::new(validator_server, mixnet_contract);
-    let validator_client = validator_client_rest::Client::new(validator_client_config);
-
-    let mixnodes = validator_client
-        .get_mix_nodes()
-        .await
-        .expect("failed to obtain initial network mixnodes");
-
-    let mut nodes_distribution = HashMap::new();
-    // initialise with 0 for each possible layer
-    for layer in 1..=max_layer {
-        nodes_distribution.insert(layer as u64, 0);
-    }
-
-    for node in mixnodes {
-        if node.mix_node.layer < 1 || node.mix_node.layer > max_layer as u64 {
-            warn!(
-                "one of bonded mixnodes is on invalid layer {}",
-                node.mix_node.layer
-            );
-            continue;
-        }
-
-        *nodes_distribution.entry(node.mix_node.layer).or_insert(0) += 1;
-    }
-
-    // this can't be None as the hashmap is guaranteed to be non-empty since we initialised it
-    // with zeroes for each possible layer
-    let layer_with_fewest = nodes_distribution
-        .iter()
-        .min_by(|a, b| a.1.cmp(&b.1))
-        .map(|(k, _v)| k)
-        .unwrap();
-
-    *layer_with_fewest
 }
 
 fn show_bonding_info(config: &Config) {
@@ -149,7 +85,7 @@ fn show_bonding_info(config: &Config) {
         sphinx_keypair
     }
 
-    let pathfinder = MixNodePathfinder::new_from_config(&config);
+    let pathfinder = MixNodePathfinder::new_from_config(config);
     let identity_keypair = load_identity_keys(&pathfinder);
     let sphinx_keypair = load_sphinx_keys(&pathfinder);
 
@@ -157,15 +93,14 @@ fn show_bonding_info(config: &Config) {
         "\nTo bond your mixnode you will need to provide the following:
     Identity key: {}
     Sphinx key: {}
-    Host: {}
-    Layer: {}
-    Location: [physical location of your node's server]
+    Address: {}
+    Mix port: {}
     Version: {}
     ",
         identity_keypair.public_key().to_base58_string(),
         sphinx_keypair.public_key().to_base58_string(),
         config.get_announce_address(),
-        config.get_layer(),
+        config.get_mix_port(),
         config.get_version(),
     );
 }
@@ -175,10 +110,10 @@ pub fn execute(matches: &ArgMatches) {
     // and then removing runtime from mixnode itself in `run`
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let id = matches.value_of("id").unwrap();
+        let id = matches.value_of(ID_ARG_NAME).unwrap();
         println!("Initialising mixnode {}...", id);
 
-        let already_init = if Config::default_config_file_path(id).exists() {
+        let already_init = if Config::default_config_file_path(Some(id)).exists() {
             println!("Mixnode \"{}\" was already initialised before! Config information will be overwritten (but keys will be kept)!", id);
             true
         } else {
@@ -187,11 +122,6 @@ pub fn execute(matches: &ArgMatches) {
 
         let mut config = Config::new(id);
         config = override_config(config, matches);
-        let layer = choose_layer(matches, config.get_validator_rest_endpoint(), config.get_validator_mixnet_contract_address()).await;
-        // TODO: I really don't like how we override config and are presumably done with it
-        // only to change it here
-        config = config.with_layer(layer);
-        debug!("Choosing layer {}", config.get_layer());
 
         // if node was already initialised, don't generate new keys
         if !already_init {

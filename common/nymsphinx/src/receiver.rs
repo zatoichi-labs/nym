@@ -121,7 +121,7 @@ impl MessageReceiver {
         Ok(stream_cipher::decrypt::<PacketEncryptionAlgorithm>(
             &encryption_key,
             &zero_iv,
-            &fragment_bytes,
+            fragment_bytes,
         ))
     }
 
@@ -199,6 +199,7 @@ impl Default for MessageReceiver {
 mod message_receiver {
     use super::*;
     use crypto::asymmetric::identity;
+    use mixnet_contract::Layer;
     use nymsphinx_addressing::clients::Recipient;
     use rand::rngs::OsRng;
     use std::collections::HashMap;
@@ -216,8 +217,9 @@ mod message_receiver {
             vec![mix::Node {
                 owner: "foomp1".to_string(),
                 stake: 123,
-                location: "unknown".to_string(),
-                host: "10.20.30.40:1789".parse().unwrap(),
+                delegation: 456,
+                host: "10.20.30.40".parse().unwrap(),
+                mix_host: "10.20.30.40:1789".parse().unwrap(),
                 identity_key: identity::PublicKey::from_base58_string(
                     "3ebjp1Fb9hdcS1AR6AZihgeJiMHkB5jjJUsvqNnfQwU7",
                 )
@@ -226,7 +228,7 @@ mod message_receiver {
                     "B3GzG62aXAZNg14RoMCp3BhELNBrySLr2JqrwyfYFzRc",
                 )
                 .unwrap(),
-                layer: 1,
+                layer: Layer::One,
                 version: "0.8.0-dev".to_string(),
             }],
         );
@@ -236,8 +238,9 @@ mod message_receiver {
             vec![mix::Node {
                 owner: "foomp2".to_string(),
                 stake: 123,
-                location: "unknown".to_string(),
-                host: "11.21.31.41:1789".parse().unwrap(),
+                delegation: 456,
+                host: "11.21.31.41".parse().unwrap(),
+                mix_host: "11.21.31.41:1789".parse().unwrap(),
                 identity_key: identity::PublicKey::from_base58_string(
                     "D6YaMzLSY7mANtSQRKXsmMZpqgqiVkeiagKM4V4oFPFr",
                 )
@@ -246,7 +249,7 @@ mod message_receiver {
                     "5Z1VqYwM2xeKxd8H7fJpGWasNiDFijYBAee7MErkZ5QT",
                 )
                 .unwrap(),
-                layer: 2,
+                layer: Layer::Two,
                 version: "0.8.0-dev".to_string(),
             }],
         );
@@ -256,8 +259,9 @@ mod message_receiver {
             vec![mix::Node {
                 owner: "foomp3".to_string(),
                 stake: 123,
-                location: "unknown".to_string(),
-                host: "12.22.32.42:1789".parse().unwrap(),
+                delegation: 456,
+                host: "12.22.32.42".parse().unwrap(),
+                mix_host: "12.22.32.42:1789".parse().unwrap(),
                 identity_key: identity::PublicKey::from_base58_string(
                     "GkWDysw4AjESv1KiAiVn7JzzCMJeksxNSXVfr1PpX8wD",
                 )
@@ -266,7 +270,7 @@ mod message_receiver {
                     "9EyjhCggr2QEA2nakR88YHmXgpy92DWxoe2draDRkYof",
                 )
                 .unwrap(),
-                layer: 3,
+                layer: Layer::Three,
                 version: "0.8.0-dev".to_string(),
             }],
         );
@@ -277,9 +281,11 @@ mod message_receiver {
             vec![gateway::Node {
                 owner: "foomp4".to_string(),
                 stake: 123,
+                delegation: 456,
                 location: "unknown".to_string(),
-                client_listener: "ws://1.2.3.4:9000".to_string(),
-                mixnet_listener: "1.2.3.4:1789".parse().unwrap(),
+                host: "1.2.3.4".parse().unwrap(),
+                mix_host: "1.2.3.4:1789".parse().unwrap(),
+                clients_port: 9000,
                 identity_key: identity::PublicKey::from_base58_string(
                     "FioFa8nMmPpQnYi7JyojoTuwGLeyNS8BF4ChPr29zUML",
                 )

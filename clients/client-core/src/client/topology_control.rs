@@ -71,9 +71,9 @@ impl<'a> TopologyReadPermit<'a> {
             Some(topology_ref) => {
                 // see if it's possible to route the packet to both gateways
                 if !topology_ref.can_construct_path_through(DEFAULT_NUM_MIX_HOPS)
-                    || !topology_ref.gateway_exists(&ack_recipient.gateway())
+                    || !topology_ref.gateway_exists(ack_recipient.gateway())
                     || if let Some(packet_recipient) = packet_recipient {
-                        !topology_ref.gateway_exists(&packet_recipient.gateway())
+                        !topology_ref.gateway_exists(packet_recipient.gateway())
                     } else {
                         false
                     }
@@ -136,19 +136,19 @@ impl Default for TopologyAccessor {
 }
 
 pub struct TopologyRefresherConfig {
-    validator_rcp_base_url: String,
+    available_validators: Vec<String>,
     mixnet_contract_address: String,
     refresh_rate: time::Duration,
 }
 
 impl TopologyRefresherConfig {
     pub fn new(
-        validator_rcp_base_url: String,
+        available_validators: Vec<String>,
         mixnet_contract_address: String,
         refresh_rate: time::Duration,
     ) -> Self {
         TopologyRefresherConfig {
-            validator_rcp_base_url,
+            available_validators,
             mixnet_contract_address,
             refresh_rate,
         }
@@ -156,7 +156,7 @@ impl TopologyRefresherConfig {
 }
 
 pub struct TopologyRefresher {
-    validator_client: validator_client_rest::Client,
+    validator_client: validator_client::Client,
 
     topology_accessor: TopologyAccessor,
     refresh_rate: Duration,
@@ -166,11 +166,9 @@ pub struct TopologyRefresher {
 
 impl TopologyRefresher {
     pub fn new(cfg: TopologyRefresherConfig, topology_accessor: TopologyAccessor) -> Self {
-        let validator_client_config = validator_client_rest::Config::new(
-            cfg.validator_rcp_base_url,
-            cfg.mixnet_contract_address,
-        );
-        let validator_client = validator_client_rest::Client::new(validator_client_config);
+        let validator_client_config =
+            validator_client::Config::new(cfg.available_validators, cfg.mixnet_contract_address);
+        let validator_client = validator_client::Client::new(validator_client_config);
 
         TopologyRefresher {
             validator_client,
@@ -180,12 +178,12 @@ impl TopologyRefresher {
         }
     }
 
-    async fn get_current_compatible_topology(&self) -> Option<NymTopology> {
+    async fn get_current_compatible_topology(&mut self) -> Option<NymTopology> {
         // TODO: optimization for the future:
         // only refresh mixnodes on timer and refresh gateways only when
         // we have to send to a new, unknown, gateway
 
-        let mixnodes = match self.validator_client.get_mix_nodes().await {
+        let mixnodes = match self.validator_client.get_cached_mix_nodes().await {
             Err(err) => {
                 error!("failed to get network mixnodes - {}", err);
                 return None;
@@ -193,7 +191,7 @@ impl TopologyRefresher {
             Ok(mixes) => mixes,
         };
 
-        let gateways = match self.validator_client.get_gateways().await {
+        let gateways = match self.validator_client.get_cached_gateways().await {
             Err(err) => {
                 error!("failed to get network gateways - {}", err);
                 return None;

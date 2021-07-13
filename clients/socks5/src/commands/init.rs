@@ -49,10 +49,10 @@ pub fn command_args<'a, 'b>() -> clap::App<'a, 'b> {
             .help("Id of the gateway we are going to connect to.")
             .takes_value(true)
         )
-        .arg(Arg::with_name("validator")
-            .long("validator")
-            .help("Address of the validator server the client is getting topology from")
-            .takes_value(true),
+        .arg(Arg::with_name("validators")
+                .long("validators")
+                .help("Comma separated list of rest endpoints of the validators")
+                .takes_value(true),
         )
         .arg(Arg::with_name("mixnet-contract")
                  .long("mixnet-contract")
@@ -89,7 +89,7 @@ async fn register_with_gateway(
 ) -> SharedKeys {
     let timeout = Duration::from_millis(1500);
     let mut gateway_client = GatewayClient::new_init(
-        gateway.client_listener.clone(),
+        gateway.clients_address(),
         gateway.identity_key,
         our_identity.clone(),
         timeout,
@@ -105,15 +105,14 @@ async fn register_with_gateway(
 }
 
 async fn gateway_details(
-    validator_server: &str,
+    validator_servers: Vec<String>,
     mixnet_contract: &str,
     chosen_gateway_id: Option<&str>,
 ) -> gateway::Node {
-    let validator_client_config =
-        validator_client_rest::Config::new(validator_server, mixnet_contract);
-    let validator_client = validator_client_rest::Client::new(validator_client_config);
+    let validator_client_config = validator_client::Config::new(validator_servers, mixnet_contract);
+    let validator_client = validator_client::Client::new(validator_client_config);
 
-    let gateways = validator_client.get_gateways().await.unwrap();
+    let gateways = validator_client.get_cached_gateways().await.unwrap();
     let valid_gateways = gateways
         .into_iter()
         .filter_map(|gateway| gateway.try_into().ok())
@@ -180,7 +179,7 @@ pub fn execute(matches: &ArgMatches) {
     let id = matches.value_of("id").unwrap(); // required for now
     let provider_address = matches.value_of("provider").unwrap();
 
-    let already_init = if Config::default_config_file_path(id).exists() {
+    let already_init = if Config::default_config_file_path(Some(id)).exists() {
         println!("Socks5 client \"{}\" was already initialised before! Config information will be overwritten (but keys will be kept)!", id);
         true
     } else {
@@ -208,7 +207,7 @@ pub fn execute(matches: &ArgMatches) {
 
         let registration_fut = async {
             let gate_details = gateway_details(
-                &config.get_base().get_validator_rest_endpoint(),
+                config.get_base().get_validator_rest_endpoints(),
                 &config.get_base().get_validator_mixnet_contract_address(),
                 chosen_gateway_id,
             )
@@ -218,7 +217,7 @@ pub fn execute(matches: &ArgMatches) {
                 .with_gateway_id(gate_details.identity_key.to_base58_string());
             let shared_keys =
                 register_with_gateway(&gate_details, key_manager.identity_keypair()).await;
-            (shared_keys, gate_details.client_listener)
+            (shared_keys, gate_details.clients_address())
         };
 
         // TODO: is there perhaps a way to make it work without having to spawn entire runtime?

@@ -224,7 +224,7 @@ impl NymClient {
     // the current global view of topology
     fn start_topology_refresher(&mut self, topology_accessor: TopologyAccessor) {
         let topology_refresher_config = TopologyRefresherConfig::new(
-            self.config.get_base().get_validator_rest_endpoint(),
+            self.config.get_base().get_validator_rest_endpoints(),
             self.config
                 .get_base()
                 .get_validator_mixnet_contract_address(),
@@ -234,10 +234,7 @@ impl NymClient {
             TopologyRefresher::new(topology_refresher_config, topology_accessor);
         // before returning, block entire runtime to refresh the current network view so that any
         // components depending on topology would see a non-empty view
-        info!(
-            "Obtaining initial network topology from {}",
-            self.config.get_base().get_validator_rest_endpoint()
-        );
+        info!("Obtaining initial network topology");
         self.runtime.block_on(topology_refresher.refresh());
 
         // TODO: a slightly more graceful termination here

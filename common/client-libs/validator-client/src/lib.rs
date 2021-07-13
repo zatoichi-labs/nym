@@ -1,309 +1,262 @@
-// Copyright 2020 Nym Technologies SA
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2021 - Nym Technologies SA <contact@nymtech.net>
+// SPDX-License-Identifier: Apache-2.0
 
-use crate::models::gateway::GatewayRegistrationInfo;
-use crate::models::mixmining::{BatchMixStatus, MixStatus};
-use crate::models::mixnode::MixRegistrationInfo;
-use crate::models::topology::Topology;
-use crate::rest_requests::{
-    ActiveTopologyGet, ActiveTopologyGetResponse, BatchMixStatusPost, GatewayRegisterPost,
-    MixRegisterPost, MixStatusPost, NodeUnregisterDelete, ReputationPatch, RestRequest,
-    RestRequestError, TopologyGet, TopologyGetResponse,
+use std::time::Duration;
+
+pub use crate::error::ValidatorClientError;
+use crate::models::{QueryRequest, QueryResponse};
+use log::error;
+use mixnet_contract::{
+    GatewayBond, IdentityKey, LayerDistribution, MixNodeBond, PagedGatewayResponse,
+    PagedMixnodeResponse,
 };
+use rand::{seq::SliceRandom, thread_rng};
 use serde::Deserialize;
-use std::fmt::{self, Display, Formatter};
+use url::Url;
 
-pub mod models;
-pub mod rest_requests;
+mod error;
+mod models;
+pub(crate) mod serde_helpers;
+mod validator_api;
 
-// for ease of use
-type Result<T> = std::result::Result<T, ValidatorClientError>;
-
-const MAX_SANE_UNEXPECTED_PRINT: usize = 100;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", untagged)]
-pub(crate) enum ErrorResponses {
-    Error(ErrorResponse),
-    Unexpected(String),
-}
-
-impl From<ErrorResponses> for ValidatorClientError {
-    fn from(err: ErrorResponses) -> Self {
-        match err {
-            ErrorResponses::Error(err_message) => {
-                ValidatorClientError::ValidatorError(err_message.error)
-            }
-            ErrorResponses::Unexpected(received) => {
-                ValidatorClientError::UnexpectedResponse(received)
-            }
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ErrorResponse {
-    error: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OkResponse {
-    ok: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", untagged)]
-pub(crate) enum DefaultRestResponse {
-    Ok(OkResponse),
-    Error(ErrorResponses),
-}
-
-#[derive(Debug)]
-pub enum ValidatorClientError {
-    RestRequestError(RestRequestError),
-    ReqwestClientError(reqwest::Error),
-    ValidatorError(String),
-    UnexpectedResponse(String),
-}
-
-impl From<RestRequestError> for ValidatorClientError {
-    fn from(err: RestRequestError) -> Self {
-        ValidatorClientError::RestRequestError(err)
-    }
-}
-
-impl From<reqwest::Error> for ValidatorClientError {
-    fn from(err: reqwest::Error) -> Self {
-        ValidatorClientError::ReqwestClientError(err)
-    }
-}
-
-impl Display for ValidatorClientError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            ValidatorClientError::RestRequestError(err) => {
-                write!(f, "could not prepare the REST request - {}", err)
-            }
-            ValidatorClientError::ReqwestClientError(err) => {
-                write!(f, "there was an issue with the REST request - {}", err)
-            }
-            ValidatorClientError::ValidatorError(err) => {
-                write!(f, "there was an issue with the validator client - {}", err)
-            }
-            ValidatorClientError::UnexpectedResponse(received) => {
-                if received.len() < MAX_SANE_UNEXPECTED_PRINT {
-                    write!(
-                        f,
-                        "received data was completely unexpected. got: {}",
-                        received
-                    )
-                } else {
-                    write!(
-                        f,
-                        "received data was completely unexpected. got: {}...",
-                        received
-                            .chars()
-                            .take(MAX_SANE_UNEXPECTED_PRINT)
-                            .collect::<String>()
-                    )
-                }
-            }
-        }
-    }
-}
-
+// Implement caching with a global hashmap that has two fields, queryresponse and as_at, there is a side process
 pub struct Config {
-    base_url: String,
+    initial_rest_servers: Vec<Url>,
+    mixnet_contract_address: String,
+    mixnode_page_limit: Option<u32>,
+    gateway_page_limit: Option<u32>,
 }
 
 impl Config {
-    pub fn new<S: Into<String>>(base_url: S) -> Self {
+    pub fn new<S: Into<String>>(
+        rest_servers_available_base_urls: Vec<String>,
+        mixnet_contract_address: S,
+    ) -> Self {
+        let initial_rest_servers = rest_servers_available_base_urls
+            .iter()
+            .map(|base_url| Url::parse(base_url).expect("Bad validator URL"))
+            .collect();
         Config {
-            base_url: base_url.into(),
+            initial_rest_servers,
+            mixnet_contract_address: mixnet_contract_address.into(),
+            mixnode_page_limit: None,
+            gateway_page_limit: None,
         }
+    }
+
+    pub fn with_mixnode_page_limit(mut self, limit: Option<u32>) -> Config {
+        self.mixnode_page_limit = limit;
+        self
+    }
+
+    pub fn with_gateway_page_limit(mut self, limit: Option<u32>) -> Config {
+        self.gateway_page_limit = limit;
+        self
     }
 }
 
 pub struct Client {
     config: Config,
+    // Currently it seems the client is independent of the url hence a single instance seems to be fine
     reqwest_client: reqwest::Client,
+    validator_api_client: validator_api::Client,
 }
 
 impl Client {
     pub fn new(config: Config) -> Self {
         let reqwest_client = reqwest::Client::new();
+        let validator_api_client = validator_api::Client::new();
+
+        // client is only ever created on process startup, so a panic here is fine as it implies
+        // invalid config. And that can only happen if an user was messing with it by themselves.
+        if config.initial_rest_servers.is_empty() {
+            panic!("no validator servers provided")
+        }
+
         Client {
             config,
             reqwest_client,
+            validator_api_client,
         }
     }
 
-    async fn make_rest_request<R: RestRequest>(
+    pub fn available_validators_rest_urls(&self) -> Vec<Url> {
+        self.config.initial_rest_servers.clone()
+    }
+
+    fn base_query_path(&self, url: &str) -> String {
+        format!(
+            "{}/wasm/contract/{}/smart",
+            url, self.config.mixnet_contract_address
+        )
+    }
+
+    // async fn latest_block(&self) -> Block {
+    //     let path = format!("{}/block", self.available_validators_rest_urls[0]);
+    //     let response = self.reqwest_client.get(path).send().await?.json().await?;
+    // }
+
+    async fn query_validators<T>(
         &self,
-        request: R,
-    ) -> Result<R::ExpectedJsonResponse> {
-        let mut req_builder = self
+        query: String,
+        use_validator_api: bool,
+    ) -> Result<T, ValidatorClientError>
+    where
+        for<'a> T: Deserialize<'a>,
+    {
+        let mut failed = 0;
+        let sleep_secs = 5;
+        // Randomly select a validator to query, keep querying and shuffling until we get a response
+        let mut validator_urls = self.available_validators_rest_urls().clone();
+
+        // This will never exit
+        loop {
+            validator_urls.as_mut_slice().shuffle(&mut thread_rng());
+            for url in validator_urls.iter() {
+                let res = if use_validator_api {
+                    Ok(self
+                        .validator_api_client
+                        .query_validator_api(query.clone(), url)
+                        .await?)
+                } else {
+                    self.query_validator(query.clone(), url).await
+                };
+                match res {
+                    Ok(res) => return Ok(res),
+                    Err(e) => {
+                        failed += 1;
+                        error!("{}", e);
+                        error!("Total failed requests {}", failed);
+                    }
+                }
+            }
+            error!(
+                "No validators available out of {} attempted! Will try again in {} seconds. Listing all attempted:",
+                validator_urls.len(), sleep_secs
+            );
+            for url in validator_urls.iter() {
+                error!("{}", url)
+            }
+            // Went with only wasm_timer so we can avoid features on the lib, and pulling in tokio
+            wasm_timer::Delay::new(Duration::from_secs(sleep_secs)).await?;
+        }
+    }
+
+    async fn query_validator<T>(
+        &self,
+        query: String,
+        validator_url: &Url,
+    ) -> Result<T, ValidatorClientError>
+    where
+        for<'a> T: Deserialize<'a>,
+    {
+        let query_url = format!(
+            "{}/{}?encoding=base64",
+            self.base_query_path(validator_url.as_str()),
+            query
+        );
+
+        let query_response: QueryResponse<T> = self
             .reqwest_client
-            .request(R::METHOD, request.url().clone());
+            .get(query_url)
+            .send()
+            .await?
+            .json()
+            .await?;
 
-        if let Some(json_payload) = request.json_payload() {
-            // if applicable, attach payload
-            req_builder = req_builder.json(json_payload)
-        }
-        Ok(req_builder.send().await?.json().await?)
-    }
-
-    pub async fn register_mix(&self, mix_registration_info: MixRegistrationInfo) -> Result<()> {
-        let req = MixRegisterPost::new(
-            &self.config.base_url,
-            None,
-            None,
-            Some(mix_registration_info),
-        )?;
-        match self.make_rest_request(req).await? {
-            DefaultRestResponse::Ok(_) => Ok(()),
-            DefaultRestResponse::Error(err) => Err(err.into()),
+        match query_response {
+            QueryResponse::Ok(smart_res) => Ok(smart_res.result.smart),
+            QueryResponse::Error(err) => Err(ValidatorClientError::ValidatorError(err.error)),
+            QueryResponse::CodedError(err) => {
+                Err(ValidatorClientError::ValidatorError(format!("{}", err)))
+            }
         }
     }
 
-    pub async fn register_gateway(
+    async fn get_mix_nodes_paged(
         &self,
-        gateway_registration_info: GatewayRegistrationInfo,
-    ) -> Result<()> {
-        let req = GatewayRegisterPost::new(
-            &self.config.base_url,
-            None,
-            None,
-            Some(gateway_registration_info),
-        )?;
-        match self.make_rest_request(req).await? {
-            DefaultRestResponse::Ok(ok_res) => {
-                if ok_res.ok {
-                    Ok(())
-                } else {
-                    Err(ValidatorClientError::ValidatorError(
-                        "received ok response with false".into(),
-                    ))
-                }
+        start_after: Option<IdentityKey>,
+    ) -> Result<PagedMixnodeResponse, ValidatorClientError> {
+        let query_content_json = serde_json::to_string(&QueryRequest::GetMixNodes {
+            limit: self.config.mixnode_page_limit,
+            start_after,
+        })
+        .expect("serde was incorrectly implemented on QueryRequest::GetMixNodes!");
+
+        // we need to encode our json request
+        let query_content = base64::encode(query_content_json);
+
+        self.query_validators(query_content, false).await
+    }
+
+    pub async fn get_mix_nodes(&self) -> Result<Vec<MixNodeBond>, ValidatorClientError> {
+        let mut mixnodes = Vec::new();
+        let mut start_after = None;
+        loop {
+            let mut paged_response = self.get_mix_nodes_paged(start_after.take()).await?;
+            mixnodes.append(&mut paged_response.nodes);
+
+            if let Some(start_after_res) = paged_response.start_next_after {
+                start_after = Some(start_after_res)
+            } else {
+                break;
             }
-            DefaultRestResponse::Error(err) => Err(err.into()),
         }
+
+        Ok(mixnodes)
     }
 
-    pub async fn unregister_node(&self, node_id: &str) -> Result<()> {
-        let req =
-            NodeUnregisterDelete::new(&self.config.base_url, Some(vec![node_id]), None, None)?;
+    pub async fn get_cached_mix_nodes(&self) -> Result<Vec<MixNodeBond>, ValidatorClientError> {
+        let query_content = validator_api::VALIDATOR_API_MIXNODES.to_string();
+        self.query_validators(query_content, true).await
+    }
 
-        match self.make_rest_request(req).await? {
-            DefaultRestResponse::Ok(ok_res) => {
-                if ok_res.ok {
-                    Ok(())
-                } else {
-                    Err(ValidatorClientError::ValidatorError(
-                        "received ok response with false".into(),
-                    ))
-                }
+    async fn get_gateways_paged(
+        &self,
+        start_after: Option<IdentityKey>,
+    ) -> Result<PagedGatewayResponse, ValidatorClientError> {
+        let query_content_json = serde_json::to_string(&QueryRequest::GetGateways {
+            limit: self.config.gateway_page_limit,
+            start_after,
+        })
+        .expect("serde was incorrectly implemented on QueryRequest::GetGateways!");
+
+        // we need to encode our json request
+        let query_content = base64::encode(query_content_json);
+
+        self.query_validators(query_content, false).await
+    }
+
+    pub async fn get_gateways(&self) -> Result<Vec<GatewayBond>, ValidatorClientError> {
+        let mut gateways = Vec::new();
+        let mut start_after = None;
+        loop {
+            let mut paged_response = self.get_gateways_paged(start_after.take()).await?;
+            gateways.append(&mut paged_response.nodes);
+
+            if let Some(start_after_res) = paged_response.start_next_after {
+                start_after = Some(start_after_res)
+            } else {
+                break;
             }
-            DefaultRestResponse::Error(err) => Err(err.into()),
         }
+
+        Ok(gateways)
     }
 
-    pub async fn set_reputation(&self, node_id: &str, new_reputation: i64) -> Result<()> {
-        let new_rep_string = new_reputation.to_string();
-        let query_param_values = vec![&*new_rep_string];
-        let query_param_keys = ReputationPatch::query_param_keys();
-
-        let query_params = query_param_keys
-            .into_iter()
-            .zip(query_param_values.into_iter())
-            .collect();
-
-        let req = ReputationPatch::new(
-            &self.config.base_url,
-            Some(vec![node_id]),
-            Some(query_params),
-            None,
-        )?;
-        match self.make_rest_request(req).await? {
-            DefaultRestResponse::Ok(ok_res) => {
-                if ok_res.ok {
-                    Ok(())
-                } else {
-                    Err(ValidatorClientError::ValidatorError(
-                        "received ok response with false".into(),
-                    ))
-                }
-            }
-            DefaultRestResponse::Error(err) => Err(err.into()),
-        }
+    pub async fn get_cached_gateways(&self) -> Result<Vec<GatewayBond>, ValidatorClientError> {
+        let query_content = validator_api::VALIDATOR_API_GATEWAYS.to_string();
+        self.query_validators(query_content, true).await
     }
 
-    pub async fn get_topology(&self) -> Result<Topology> {
-        let req = TopologyGet::new(&self.config.base_url, None, None, None)?;
-        match self.make_rest_request(req).await? {
-            TopologyGetResponse::Ok(topology) => Ok(topology),
-            TopologyGetResponse::Error(err) => Err(err.into()),
-        }
-    }
+    pub async fn get_layer_distribution(&self) -> Result<LayerDistribution, ValidatorClientError> {
+        // serialization of an empty enum can't fail...
+        let query_content_json =
+            serde_json::to_string(&QueryRequest::LayerDistribution {}).unwrap();
 
-    pub async fn get_active_topology(&self) -> Result<Topology> {
-        let req = ActiveTopologyGet::new(&self.config.base_url, None, None, None)?;
-        match self.make_rest_request(req).await? {
-            ActiveTopologyGetResponse::Ok(topology) => Ok(topology),
-            ActiveTopologyGetResponse::Error(err) => Err(err.into()),
-        }
-    }
+        // we need to encode our json request
+        let query_content = base64::encode(query_content_json);
 
-    pub async fn post_mixmining_status(&self, status: MixStatus) -> Result<()> {
-        let req = MixStatusPost::new(&self.config.base_url, None, None, Some(status))?;
-        match self.make_rest_request(req).await? {
-            DefaultRestResponse::Ok(ok_res) => {
-                if ok_res.ok {
-                    Ok(())
-                } else {
-                    Err(ValidatorClientError::ValidatorError(
-                        "received ok response with false".into(),
-                    ))
-                }
-            }
-            DefaultRestResponse::Error(err) => Err(err.into()),
-        }
-    }
-
-    pub async fn post_batch_mixmining_status(&self, batch_status: BatchMixStatus) -> Result<()> {
-        let req = BatchMixStatusPost::new(&self.config.base_url, None, None, Some(batch_status))?;
-        match self.make_rest_request(req).await? {
-            DefaultRestResponse::Ok(ok_res) => {
-                if ok_res.ok {
-                    Ok(())
-                } else {
-                    Err(ValidatorClientError::ValidatorError(
-                        "received ok response with false".into(),
-                    ))
-                }
-            }
-            DefaultRestResponse::Error(err) => Err(err.into()),
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn client_test_fixture(base_url: &str) -> Client {
-    Client {
-        config: Config::new(base_url),
-        reqwest_client: reqwest::Client::new(),
+        self.query_validators(query_content, false).await
     }
 }

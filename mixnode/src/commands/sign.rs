@@ -1,23 +1,26 @@
+use crate::commands::*;
 use crate::config::{persistence::pathfinder::MixNodePathfinder, Config};
 use clap::{App, Arg, ArgMatches};
 use colored::*;
 use config::NymConfig;
 use crypto::asymmetric::identity;
-use log::*;
+use log::error;
+
+const SIGN_TEXT_ARG_NAME: &str = "text";
 
 pub fn command_args<'a, 'b>() -> App<'a, 'b> {
     App::new("sign")
         .about("Sign text to prove ownership of this mixnode")
         .arg(
-            Arg::with_name("id")
-                .long("id")
+            Arg::with_name(ID_ARG_NAME)
+                .long(ID_ARG_NAME)
                 .help("The id of the mixnode you want to sign with")
                 .takes_value(true)
                 .required(true),
         )
         .arg(
-            Arg::with_name("text")
-                .long("text")
+            Arg::with_name(SIGN_TEXT_ARG_NAME)
+                .long(SIGN_TEXT_ARG_NAME)
                 .help("The text to sign")
                 .takes_value(true)
                 .required(true),
@@ -34,10 +37,10 @@ fn load_identity_keys(pathfinder: &MixNodePathfinder) -> identity::KeyPair {
 }
 
 pub fn execute(matches: &ArgMatches) {
-    let id = matches.value_of("id").unwrap();
-    let text = matches.value_of("text").unwrap();
+    let id = matches.value_of(ID_ARG_NAME).unwrap();
+    let text = matches.value_of(SIGN_TEXT_ARG_NAME).unwrap();
 
-    let config = match Config::load_from_file(id) {
+    let config = match Config::load_from_file(Some(id)) {
         Ok(cfg) => cfg,
         Err(err) => {
             error!("Failed to load config for {}. Are you sure you have run `init` before? (Error was: {})", id, err);

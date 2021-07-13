@@ -17,10 +17,8 @@ members = [
     "clients/webassembly",
     "clients/client-core",
     "common/client-libs/gateway-client",
-    "common/client-libs/metrics-client",
     "common/client-libs/mixnet-client",
     "common/client-libs/validator-client",
-    "common/client-libs/validator-client-rest",
     "common/config",
     "common/crypto",
     "common/mixnet-contract",
@@ -44,7 +42,7 @@ members = [
     "gateway",
     "gateway/gateway-requests",
     "mixnode",
-    "network-monitor",
+    "validator-api",
     "service-providers/network-requester",
 ]
 
@@ -55,7 +53,7 @@ default-members = [
     "gateway",
     "service-providers/network-requester",
     "mixnode",
-    "network-monitor",
+    "validator-api",
 ]
 
-exclude = ["explorer"]
+exclude = ["explorer", "contracts"]
